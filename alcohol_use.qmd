@@ -1,0 +1,430 @@
+---
+title: "Group 2 Project Report"
+format: html
+editor: visual 
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = TRUE,echo = TRUE ,warning = FALSE,message = FALSE)
+```
+
+Author: Dongdong Zhu, Haochuan Liu, Yunhua Tan, Jiakun Liang, Zifan Huang
+
+The project this study selected is "Alcohol Posts and Alcohol Use". The packages we used are as follows: tidyverse[@tidyverse], dplyr[@dplyr], plotly[@plotly], RColorBrewer[@RColorBrewer], lubridate[@lubridate], ggthemes[@ggthemes], cowplot[@cowplot]
+
+```{r}
+library(tidyverse) 
+library(dplyr) 
+library(plotly)
+library(RColorBrewer)
+library(lubridate)
+library(ggthemes)
+library(cowplot)
+```
+
+# 1. Tidying Datasets
+
+## 1.1 Tidying Separated Tables
+
+This data project includes "Presurvey.csv", "DayData.csv", " WeekData.csv", "User.csv", "Comment.csv", "Like.csv", "Post.csv", "Login.csv".
+
+### 1.1.1 Tidying Table User
+
+This table comprises information about each user, including their UserID, role, Group number, and the experimental group to which they are allocated. "UserID" is the primary key in this table.
+
+Moreover, adhering to Principle 4, which suggests that each value must have its own cell, the variable 'Condition' has been split into two respective columns, which describe the types of fake alcohol posts in terms of positivity and sociality to which users were exposed during the last three weeks.
+
+```{r}
+#User.csv
+
+#clean data and find the primary key
+user <- read.csv("User.csv", na = c("NA", ""))
+user |> 
+  count(UserID) |> 
+  filter(n > 1 )
+
+#The primary key of login is "UserID"
+
+#Use Principle 4 to tidy up the data
+user <- user |>
+  separate_wider_delim(Condition, delim = "/", names = c("post_attitude", "post_social")) 
+
+```
+
+### 1.1.2 Tidying Table Presurvey
+
+The data in "presurvey.csv" is from the survey conducted one week before the start of (posting) data collection. Firstly, each participants were assigned to a unique UserID, then, two different aspects of information were included in the presurvey: one is participants basic demographic information and a series of personal characteristics that are related to the experiment, such as their previous drinking frequency (Alc_Freq_Normal) or drinking motivations (DMQ). The other is social network variables between the participants and other group members, such as the degree of familiarity (GroupMember_Familar).
+
+After initial exploration of the dataset, we found that all the social network variables were inconsistent with principle 2. The column headers of such variables were like GroupMember_x (x is a positive integer from 1 to 20) or GroupMember_x_Familiar: the column headers contained both data and column names. Hence, we use pivot_longer() function to lengthen the data.
+
+Then we found that there were two different units in the "Presurvey", the primary key of demographic and personal characteristics variables was "UserID”，while that for social network variables were "UserID” and "GroupMember_ID". This makes sense as personal information about the same individual is uniquely identified, but information about his or her relationship to different individuals may vary, i.e.,relationship information requires two identified individuals to determine. So we eventually split the "Presurvey.csv" into two tibble: "Individual.csv" and "Group.csv", the former contains demographic variables and personal characteristics related to the experiment, whose primary key is "UserID", the latter contains social network variables whose primary key is "UserID" and "GroupMember_ID".
+
+```{r}
+#Presurvey.csv
+
+presurvey <- read_csv("PreSurvey.csv") |>
+  distinct(UserID,.keep_all = T) # Delete the rows with duplicate UserIDs because the study requires that each participants fill out the presurvey only once.
+
+new_presurvey <- presurvey |> 
+  rename_with(
+    ~ ifelse(grepl("^GroupMember_[0-9]+$", .x), paste0(.x, "_GroupMember_ID"), .x),
+    everything()) |> # The grepl function and regular expression to match all coulmns that starts with groupmember and ends with numbers, if match, add the "_GroupMember_ID" suffix to the original name by renaming the column names. This step aims to rename the column like "GroupMember_x", after this, all columns headers that needed to be pivot would have the same pattern : GroupMember_X_Y. X is the referring group member, which is data, and Y is different variable. Then, we can use pivot_longer() function with names_to = c("group_member_number",".value") argument to deal with all the columns.
+  pivot_longer(
+    cols = starts_with("GroupMember_"), # choose all columns which their names start with " Groupmember".
+    names_to = c("group_member_number",".value"), # value of the chosen columns will go to two kinds of columns. As all the chosen columns have the same former part: GroupMember_X，these part will become the value of a new column whose name is "group_member_number", the ".value" means that the original value of the chosen columns will be remained with the latter part of the original column name as column name.
+    names_pattern = "(GroupMember_\\d+_)(\\w+)", # use regular expression specify separation ranges.
+    values_drop_na = TRUE 
+  ) |>
+  mutate(group_member_number = parse_number(group_member_number)) # Retain only the numeric portion of the value in the "groupmember number" column.
+
+#split the presurvey data
+individual <- new_presurvey |> 
+  select(UserID:SNSID_3) |> 
+  distinct() |>
+  separate_wider_delim(Alc_Freq_Normal, delim = ".", names = c("Alc_code", "Alc_freq")) |> # deal with a column that is inconsistent with principle 4.
+  select(-Alc_freq)|>
+  rename (Alc_freq = Alc_code) |>
+  write_csv("Individual.csv") #store the tibble as csv file.
+
+#split the presurvey data
+group <- new_presurvey |> 
+  select(UserID,group_member_number:Rangorde) |>
+  distinct(UserID,GroupMember_ID,.keep_all = TRUE) |>
+  write_csv("Group.csv")
+
+# Verify the primary key of user_presurvey dataset.
+individual |>
+  group_by(UserID) |>
+  mutate(n_identical = n()) |>
+  filter(n_identical > 1) |>
+  arrange(UserID) |> 
+  ungroup() 
+
+# Verify the primary key of group_presurvey dataset.
+group |>
+  group_by(UserID,GroupMember_ID) |>
+  mutate(n_identical = n()) |>
+  filter(n_identical > 1) |>
+  arrange(UserID) |> 
+  ungroup() 
+
+individual |> 
+  count(UserID) |> 
+  filter(n > 1 )
+
+#The primary key of individual is "UserID"
+##The primary key of group is the combination of "UserID" and "GroupMember_ID"
+```
+
+### 1.1.3 Tidying Table WeekData
+
+The WeekData dataset covers weekly survey data across 6 weeks. Each observation is the information collected from one survey filled by one participant. Most participants filled their survey once a week, while some participants forgot to take the survey for certain week(s) or take multiple surveys on the same date/week.
+
+The types of variables include: UserID, the time information and level of completion (e.g. StartDate, Duration, Finished), participants expectations for drinking alcohol (Alc_ASS), particpants' group/social pressure related to alcohol (Alc_IN, Alc_DN), and participants' usage of social network service (Sns). The first two types of variables are general information about the survey, while the rest are content of the survey or the characteristics of the participant. The "StartDate" and "EndDate" are dttm(datetime) variable, while the rest are recorded as dbl(numeric) variable. All the variables related to the characteristics of the participants are actually categorical but are recorded as numeric in coding. We can change any of it to factors through factor() according to the need of different analysis.
+
+We did not drop observations where the response is incomplete or the same participants take multiple surveys in one week because they are still useful for some research interest. If we need to drop any cases, we can use filter().
+
+```{r}
+#WeekData.csv
+weekdata <- read_csv("WeekData.csv", na =c("NA", ""))
+
+#This Dataset is tidy according to the four principles.
+
+#Determine the Primary Key
+weekdata |>
+  group_by(UserID, StartDate) |>
+  mutate(n_identical = n()) |>
+  filter(n_identical > 1) |>
+  arrange(UserID, StartDate) |> 
+  ungroup() 
+#The primary key of weekdata is the combination of "UserID" and "StartDate"
+```
+
+### 1.1.4 Tidying Table DayData
+
+The DayData dataset covers daily survey data across 43 days. Each observation is the information collected from one survey filled by one participant. Most participants filled their survey on a daily basis, while some participants forgot to take the survey in certain day(s) or take multiple surveys in the same day.
+
+The table consists of two parts: general information about the survey and measurements of participants. The first part includes variables: UserID, the time information and level of completion (e.g. StartDate, Duration, Finished). The "StartDate" and "EndDate" are dttm(datetime) variable, while the rest are recorded as dbl(numeric) variable. The second part is about individuals' measurements of alcohol use (Alc_Occ, Alc_Freq, Alc_Soc), sporting (Sport_Occ, Sport_Freq, Sport_Soc), sporting (Snack_Occ, Snack_Freq, Snack_Soc), and feelings. All the variables are actually categorical but are recorded as numeric in coding. We can change any of it to factors through factor() according to the need of different analysis.
+
+In the table, each row represents measurements of each participant taken from each day, with a single column "day_nr" representing the day number. Since each row has already represented a distinct case in the dataset, Principle 2 will not be applied. Additionally, the table contains only one type of case, that is, individuals' measurements of alcohol use, snacking, and sporting on a daily basis. Therefore, it is not necessary to split the table.
+
+```{r}
+#DayData.csv
+daydata <- read_csv("DayData.csv")
+
+# This Dataset is tidy according to the four principles.
+
+#Find Primary Key
+daydata |>
+  group_by(UserID,StartDate) |>
+  mutate(n_identical = n()) |>
+  filter(n_identical > 1) |>
+  arrange(UserID, StartDate) |> 
+  ungroup()
+#The primary keys of Daydata are "UserID", "day_nr", "StartDate". #Problem: Initially, we tried to select "UserID" and "StartDate" as primary keys, but we found some duplicate rows with the same combination of UserID and StartDate.
+
+#Clean Data
+#We only retain one of the duplicate rows with the same combination of UserID and StartDate, since we found that the rows contain the same combination of UserID and StartDate but different other elements. 
+daydata <- daydata |>
+  distinct(UserID,StartDate,.keep_all = T) |>
+  filter(!is.na(UserID))
+
+daydata |>
+  group_by(UserID,StartDate) |>
+  mutate(n_identical = n()) |>
+  filter(n_identical > 1) |>
+  arrange(UserID, StartDate) |> 
+  ungroup()
+# The primary key of daydata is the combination of "UserID" and "StartDate"
+```
+
+### 1.1.5 Tidying Table Like
+
+The Like dataset contains information about likes received by posts in the social networking site (SNS) tool during the experiment. There are two columns in the dataset: "LikerID" and "PostID". "LikerID" represents the unique identifier of the user who liked a post, while "PostID" represents the unique identifier of the post that received the like. These columns allow us to associate likes with specific users and the posts they engaged with in the SNS tool.The combination of "PostID" and "LikerID" serves as primary key.
+
+One thing needs to be noted, some users liked the same post twice. For example, the user with the LikerID 179 has liked the post with the PostID 4244, and this interaction has occurred 2 times. Therefore, we use distinct() function to clean up duplicated cases.
+
+```{r}
+# Like.csv
+like <- read_csv("Like.csv", col_names = TRUE)
+
+#This Dataset is tidy according to the four principles.
+
+# Find the primary key; there are only 2 variables in this table
+like |> 
+  count(LikerID, PostID) |> 
+  filter(n > 1) |>  
+  distinct(LikerID, PostID)
+#The primary key of like is the combination of "LikerID" and "PostID"
+```
+
+### 1.1.6 Tidying Table Login
+
+The dataset "Login" contains information about the times at which participants logged on to the SNS app. There are two columns in the table: "UserID" and "User_LoginTime". UserID represents the unique identification number assigned to each participant using the SNS app. User_LoginTime indicates the specific time at which a participant logged on to the SNS app. The primary key are "UserID" and "User_LoginTime".
+
+```{r}
+#Login.csv
+login <- read_csv("Login.csv", col_names = TRUE)
+
+#This Dataset is tidy according to the four principles.
+
+#Find the primary key
+login |> 
+  count(UserID, User_LoginTime) |> 
+  filter(n > 1) 
+#The primary key of login is the combination of "UserID" and "User_LoginTime"
+```
+
+### 1.1.7 Tidying Table Post
+
+The dataset "Post" contains information about the posts that participants encountered in a social networking site (SNS) tool during the six week experiment. This dataset provides detailed information about the post content, types, and engagement metrics of posts within the experimental SNS tool (e.g. alcoholpost, sportpost and snackpost), allowing for the analysis of participant interactions and responses to different types of posts. The primary key in this dataset are PostID" and "ViewerID".
+
+```{r}
+#Post.csv
+post <- read_csv("Post.csv", col_names = TRUE)
+
+#This Dataset is tidy according to the four principles.
+
+#Find the primary key
+post |> 
+  count(PostID, ViewerID) |> 
+  filter(n > 1) 
+#The primary key of login is the combination of "PostID" and "ViewerID"
+```
+
+### 1.1.8 Tidying Table Comment
+
+This table contains information about user comments, including PostID, CommentTime, CommenterID, and CommentContent. To ensure uniqueness in each row, the distinct() function was applied, filtering out comments posted repeatedly by the same person at the same time.
+
+The primary keys for this data are "PostID" and "CommentTime". The data adheres to tidy principles, and as such, no additional adjustments were necessary for this table.
+
+```{r}
+#Comment.csv
+comment <- read.csv("Comment.csv", na =c("NA", ""))
+
+#This Dataset is tidy according to the four principles.
+
+#Distinct rows to avoid identical comments from the same commenter posted simultaneously
+comment <- distinct(comment)
+
+#Find the primary key
+comment |> 
+  count(PostID, CommentTime) |> 
+  filter(n > 1)
+#The primary key is the combination of "PostID" and "CommentTime"
+
+```
+
+## 1.2 Table Merging and Foreign Keys Identification
+
+### Step 1
+
+The individual and user tibble share the primary key ("UserID"). Therefore, they are merged into the same tibble "userinfo" according to Principle 1 to increase the efficiency of data storage. This new tibble includes all the information/characteristics of each user.
+
+### Step 2
+
+Subsequently, we have 8 tibbles/datasets (userinfo, group, weekdata, daydata, post, comment, like, login) which have different primary keys.
+
+All these tibbles share the same foreign key "UserID", enabling the connection of different tibbles for various research interests. The mapping and keys of the tibbles are shown in ***Figure 1***. To make sure the merging is successful, we test for the merging of Userinfo to WeekData and Userinfo to DayData, which will be used in our individual visualization projects. With anti_join() function, we find that there are more UserIDs in Userinfo than in DayData and WeekData. This is because non-participants and some participants who only take the presurvey are not included in DayData and WeekData. We also find that these two merging cases (and the merging between UserID and all the other tibbles) are one-to-many relationships.
+
+Since each UserID occurs once in the "User" table, but might occur multiple times in the "DayData" table, so the relationship between these two tables is "one-to-many".
+
+![Figure 1 - The Mapping of All the Dataset](group%202.png){#mapping}
+
+```{r}
+# Step 1: Merge Individuals.csv and User.csv into Userinfo.csv with "UserID" as the primary key
+userinfo <- full_join(individual, user, join_by(UserID)) |> 
+  write_csv("userinfo.csv")
+
+#Match
+# The foreign key of the table is UserID, to check the match of the foreign key between differet tables, we use anti_join() function. For function anti_join(X,Y,by = "UserID"), it will returns the rows from X that do not have a match in Y based on "UserID".
+anti_join(userinfo,daydata,by="UserID") # The results show that some UserID appear in the userinfo dataset but not in the daydata dataset
+anti_join(daydata,userinfo,by="UserID") # The results show that all UserIDs that appear in the daydata dataset are in the userinfo dataset.
+anti_join(userinfo,weekdata,by="UserID") # Some UserID appear in the userinfo dataset but not in the weekdata dataset
+anti_join(weekdata,userinfo,by="UserID") # All UserIDs that appear in the WeekData dataset are in the userinfo dataset.
+
+#To check one-to-one, one-to-many or many-to-many, just to check the number of occurrences of the same UserID in different datasets.
+userinfo |>
+  count(UserID) |>
+  filter(n > 1) # Each userid only appears once in the userinfo dataset.
+
+daydata |>
+  count(UserID) |> # Each userid appears several times in the daydata dataset.
+  filter(n > 1)
+
+weekdata |>
+  count(UserID) |> #  Each userid appears several times in the weekdata dataset.
+  filter(n > 1)
+
+# so the the relationship between userid and daydata and that between userid and week data are both one-to-many.
+```
+
+# 2. Individual Visualization
+
+## 2.2 Participants' daily frequencies of sporting, snacking and alcohol use by education level
+
+Author: Dongdong Zhu
+
+Student ID: 13523171
+
+### Research Question
+
+What is the correlation between participants' education level and their daily frequencies of alcohol consumption, snack intake and sport engagement?
+
+### Observations
+
+The data is from two original data sets: education information from Presurvey.csv and daily records of alcohol, snack and sports activities from Daydata.csv during a six-week period. The plot is generated using the Plotly package, featuring a scatterplot where each point corresponds to a user's recording. The colors represent their education levels, categorized into HBO, university bachelor, and master's degrees. A range slider is provided, allowing readers to selectively focus on specific time periods.Overall, it can be observed that master's students are less likely to consume alcohol comparted to the other two groups, while a few bachelor's students (UserID: 281, 412, 423) exhibit significantly higher alcohol consumption. In terms of snack intake, the average level of master's student is also lower compared to the other groups. When it comes to the time spent on sport, the majority of bachelor's students maintain a more regular sports routine, while students in HBO tend to spend more time on sports than the average level.
+
+```{r}
+#Join two datasets which contain necessary information to answer the research question
+individual_day <- left_join(daydata, individual, "UserID") |> 
+  select(UserID, StartDate, Educ_year, Educ, Alc_Freq, Alc_Occ, Sport_Freq, Sport_Occ, Snack_Freq, Snack_Occ) |> 
+  #Clean data and convert the variable to factors and numeric variables accordingly
+  #Mark individuals from other education levels as NA
+  mutate(Educ = as.factor(ifelse(Educ == 4, NA, Educ)), 
+         #Convert those who reported they did not have alcohol to have a frequency of 0, and tidy up the data
+         Alc_Freq = as.numeric(ifelse(grepl("[a-zA-Z]", Alc_Freq), NA, ifelse(Alc_Occ == 1, 0, Alc_Freq))),
+         #Convert those who reported they did not have snack consumption to have a frequency of 0, and tidy up the data
+         Sport_Freq = as.numeric(ifelse(grepl("[a-zA-Z]", Sport_Freq), NA, ifelse(Sport_Occ == 1, 0, Sport_Freq))),
+         #Convert those who reported they did not have sport to have a frequency of 0, and tidy up the data
+         Snack_Freq = as.numeric(ifelse(grepl("[a-zA-Z]", Snack_Freq), NA, ifelse(Snack_Occ == 1, 0, Snack_Freq)))
+  ) |> 
+  #Rank the sport time and mark those who have unreasonale sport time (> 300mins/day) as NA
+  arrange(desc(Sport_Freq)) |> 
+  mutate(Sport_Freq = ifelse(Sport_Freq > 300, NA, Sport_Freq)) 
+
+#Convert the StartDate to datetime format
+individual_day$datetime <- ymd_hms(individual_day$StartDate) 
+
+#Create Educ_label to represent the levels of Edcu
+individual_day$Educ_Label <- factor(individual_day$Educ, labels = c("HBO", "Bachelor", "Master"))
+
+#Delete rows containing missing values
+individual_day <- na.omit(individual_day)
+
+#Create a plot with x to time, y to alcohol frequency and color to education levels
+plot_alcohol <- 
+  plot_ly(
+    data = individual_day, 
+    x = ~datetime, 
+    y = ~Alc_Freq, 
+    color = ~Educ_Label
+  ) |> 
+  #Add markers with specified opacity, size and text without the legend
+  add_markers(
+    marker = list(opacity = 0.6, size = 4), 
+    showlegend = FALSE,
+    hovertemplate = ~paste("UserID: ", UserID, "<br>Day: ", datetime, "<br>Alcohol Frequency: ", Alc_Freq)) |> 
+  #Produce the title of Y axis
+  layout(
+    xaxis = list(title = ""),
+    yaxis = list(title = "Alcohol Freq (glasses)", titlefont = list(size = 10))
+  )
+
+#Create a plot with x to time, y to snack frequency and color to education levels
+plot_snack <- 
+  plot_ly(
+    data = individual_day, 
+    x = ~datetime, 
+    y = ~Snack_Freq, 
+    color = ~Educ_Label
+  ) |> 
+  add_markers(
+    marker = list(opacity = 0.6, size = 4), 
+    showlegend = FALSE,
+    hovertemplate = ~paste("UserID: ", UserID, "<br>Day: ", datetime, "<br>Snack Frequency: ", Snack_Freq)
+  ) |> 
+  layout(
+    xaxis = list(title = ""),
+    yaxis = list(title = "Snack Freq (occasions)", titlefont = list(size = 10))
+  )
+
+#Create a plot with x to time, y to sport frequency and color to education levels
+plot_sport <- 
+  plot_ly(
+    data = individual_day, 
+    x = ~datetime, 
+    y = ~Sport_Freq, 
+    color = ~Educ_Label
+  ) |>
+  add_markers(
+    marker = list(opacity = 0.6, size = 4),
+    hovertemplate = ~paste("UserID: ", UserID, "<br>Day: ", datetime, "<br>Sport Frequency: ", Sport_Freq)
+  ) |> 
+  layout(
+    xaxis = list(title = ""),
+    yaxis = list(title = "Sport Time (mins)", titlefont = list(size = 10))
+  )
+
+#Create a new plot to combine three plots, share the X axis and Y axis
+plot_lifestyle <- 
+  subplot(plot_alcohol, plot_snack, plot_sport, nrows = 3, shareX = TRUE, shareY = TRUE, which_layout = "merge") |> 
+  #Add range slider and annotations
+  layout(xaxis = list(
+         rangeslider = list(
+         visible = TRUE, 
+         thickness = 0.05,
+         range = range(individual_day$datetime),  
+         bgcolor = "lightgrey",  
+         tickformat = "%Y-%m-%d")),
+    annotations = list(
+      list(text = "Frequency of Alcohol, Snack, and Sport by Education Level",
+           xref = "paper",
+           yref = "paper",
+           x = 0.5,
+           y = 1.08,
+           showarrow = FALSE,
+           font = list(size = 16)),
+      list(text = "Use the slider here to choose a time period",
+           xref = "paper",
+           yref = "paper",
+           x = 0.5,
+           y = - 0.3,
+           showarrow = FALSE,
+           font = list(size = 12))
+      ))
+
+plot_lifestyle
+
+```
